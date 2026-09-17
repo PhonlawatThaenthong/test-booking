@@ -7,8 +7,12 @@ import { Booking, BookingStatus, PaymentStatus } from './booking.entity';
 import { Room, RoomStatus } from '../rooms/room.entity';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { UpdateBookingDto } from './dto/update-booking.dto';
+import { PayBookingDto } from './dto/pay-booking.dto';
 import { BookingResponse, nightsBetween, toBookingResponse } from './booking.response';
 import { UserRole } from '../users/user.entity';
+import { PaymentMethod } from '../payments/payment.entity';
+import { PaymentsService } from '../payments/payments.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 /** Postgres SQLSTATEs that both mean "someone else got this range first". */
 const PG_EXCLUSION_VIOLATION = '23P01';
@@ -21,6 +25,8 @@ export class BookingsService {
   constructor(
     @InjectRepository(Booking) private readonly repo: Repository<Booking>,
     private readonly dataSource: DataSource,
+    private readonly payments: PaymentsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -96,9 +102,18 @@ export class BookingsService {
     return toBookingResponse(booking);
   }
 
-  /** `POST /api/bookings/:id/pay` — a stub until the Sprint 4 gateway. */
-  async markPaid(id: string, actorId: string, actorRole: UserRole): Promise<BookingResponse> {
-    const booking = await this.repo.findOne({ where: { id } });
+  /**
+   * `POST /api/bookings/:id/pay` — the charge itself is still a stub (no real
+   * gateway is wired up), but it now leaves a real audit trail: a `payments`
+   * row via `PaymentsService`, and a queued booking-confirmation notification.
+   */
+  async markPaid(
+    id: string,
+    actorId: string,
+    actorRole: UserRole,
+    dto: PayBookingDto = {},
+  ): Promise<BookingResponse> {
+    const booking = await this.repo.findOne({ where: { id }, relations: { customer: true } });
     if (!booking) throw new NotFoundException('ไม่พบการจอง');
     if (actorRole === UserRole.CUSTOMER && booking.customerId !== actorId) {
       throw new ForbiddenException('ไม่มีสิทธิ์เข้าถึงการจองนี้');
@@ -111,6 +126,10 @@ export class BookingsService {
     booking.paymentStatus = PaymentStatus.PAID;
     booking.status = BookingStatus.APPROVED;
     await this.repo.save(booking);
+
+    await this.payments.recordSuccess(booking.id, booking.totalPrice, dto.method ?? PaymentMethod.CARD);
+    await this.notifications.sendBookingConfirmation(booking, booking.customer.email);
+
     return this.getOrFail(id);
   }
 
@@ -158,11 +177,15 @@ export class BookingsService {
       throw new ForbiddenException('ไม่มีสิทธิ์เข้าถึงการจองนี้');
     }
 
+    const wasPaid = booking.paymentStatus === PaymentStatus.PAID;
     booking.status = BookingStatus.CANCELLED;
-    if (booking.paymentStatus === PaymentStatus.PAID) {
+    if (wasPaid) {
       booking.paymentStatus = PaymentStatus.REFUNDED;
     }
     await this.repo.save(booking);
+    if (wasPaid) {
+      await this.payments.recordRefund(booking.id);
+    }
     return this.getOrFail(id);
   }
 

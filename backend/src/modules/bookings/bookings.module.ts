@@ -5,9 +5,11 @@ import { BookingsService } from './bookings.service';
 import { BookingsController } from './bookings.controller';
 import { StaffBookingsController } from './staff-bookings.controller';
 import { RoomsModule } from '../rooms/rooms.module';
+import { PaymentsModule } from '../payments/payments.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Booking]), RoomsModule],
+  imports: [TypeOrmModule.forFeature([Booking]), RoomsModule, PaymentsModule, NotificationsModule],
   controllers: [BookingsController, StaffBookingsController],
   providers: [BookingsService],
   exports: [BookingsService],

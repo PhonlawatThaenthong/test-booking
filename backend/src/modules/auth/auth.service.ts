@@ -8,6 +8,7 @@ import { User } from '../users/user.entity';
 import { RefreshToken } from './refresh-token.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { getJwtAccessSecret } from '../../config/jwt.config';
 
 export interface AuthTokens {
   accessToken: string;
@@ -65,7 +66,7 @@ export class AuthService {
     const accessToken = await this.jwt.signAsync(
       { sub: user.id, email: user.email, role: user.role },
       {
-        secret: process.env.JWT_ACCESS_SECRET,
+        secret: getJwtAccessSecret(),
         expiresIn: process.env.JWT_ACCESS_TTL ?? '15m',
       },
     );

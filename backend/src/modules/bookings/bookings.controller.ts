@@ -3,6 +3,7 @@ import {
 } from '@nestjs/common';
 import { BookingsService } from './bookings.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { PayBookingDto } from './dto/pay-booking.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
 
@@ -22,11 +23,15 @@ export class BookingsController {
     return this.bookings.findForCustomer(user.sub);
   }
 
-  /** Payment stub — replaced by the real gateway in Sprint 4. */
+  /** The charge itself is still a stub — see BookingsService.markPaid. */
   @Post(':id/pay')
   @HttpCode(200)
-  pay(@CurrentUser() user: JwtPayload, @Param('id', ParseUUIDPipe) id: string) {
-    return this.bookings.markPaid(id, user.sub, user.role);
+  pay(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PayBookingDto,
+  ) {
+    return this.bookings.markPaid(id, user.sub, user.role, dto);
   }
 
   @Post(':id/cancel')
