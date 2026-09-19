@@ -7,11 +7,13 @@ import { Booking, BookingStatus, PaymentStatus } from './booking.entity';
 import { Room, RoomStatus } from '../rooms/room.entity';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { UpdateBookingDto } from './dto/update-booking.dto';
-import { PayBookingDto } from './dto/pay-booking.dto';
 import { BookingResponse, nightsBetween, toBookingResponse } from './booking.response';
 import { UserRole } from '../users/user.entity';
-import { PaymentMethod } from '../payments/payment.entity';
 import { PaymentsService } from '../payments/payments.service';
+import {
+  CustomerPaymentView, StaffPaymentView, toCustomerPaymentView, toStaffPaymentView,
+  UploadedSlip,
+} from '../payments/payment.response';
 import { NotificationsService } from '../notifications/notifications.service';
 
 /** Postgres SQLSTATEs that both mean "someone else got this range first". */
@@ -103,34 +105,82 @@ export class BookingsService {
   }
 
   /**
-   * `POST /api/bookings/:id/pay` — the charge itself is still a stub (no real
-   * gateway is wired up), but it now leaves a real audit trail: a `payments`
-   * row via `PaymentsService`, and a queued booking-confirmation notification.
+   * `POST /api/bookings/:id/pay` — the customer uploads a PromptPay transfer
+   * slip. This does NOT mark the booking paid: it records the slip and moves
+   * the payment to `awaiting_verification`. A staff member confirms it later
+   * (`verifyPayment`), which is the only path that flips the booking to paid.
    */
-  async markPaid(
+  async submitSlip(
     id: string,
     actorId: string,
     actorRole: UserRole,
-    dto: PayBookingDto = {},
-  ): Promise<BookingResponse> {
-    const booking = await this.repo.findOne({ where: { id }, relations: { customer: true } });
-    if (!booking) throw new NotFoundException('ไม่พบการจอง');
-    if (actorRole === UserRole.CUSTOMER && booking.customerId !== actorId) {
-      throw new ForbiddenException('ไม่มีสิทธิ์เข้าถึงการจองนี้');
-    }
+    file: UploadedSlip | undefined,
+  ): Promise<CustomerPaymentView> {
+    if (!file) throw new BadRequestException('กรุณาแนบไฟล์สลิป (field: slip)');
+
+    const booking = await this.loadOwned(id, actorId, actorRole);
     if (booking.status === BookingStatus.CANCELLED) {
       throw new ConflictException('การจองนี้ถูกยกเลิกแล้ว');
     }
-    if (booking.paymentStatus === PaymentStatus.PAID) return this.getOrFail(id);
+    if (booking.paymentStatus === PaymentStatus.PAID) {
+      throw new ConflictException('การจองนี้ชำระเงินเรียบร้อยแล้ว');
+    }
+
+    const payment = await this.payments.submitSlip(booking.id, booking.totalPrice, file);
+    return toCustomerPaymentView(payment);
+  }
+
+  /** `GET /api/bookings/:id/payment` — the customer polls their payment state. */
+  async getPaymentForCustomer(
+    id: string,
+    actorId: string,
+    actorRole: UserRole,
+  ): Promise<CustomerPaymentView> {
+    await this.loadOwned(id, actorId, actorRole);
+    const payment = await this.payments.findForBooking(id);
+    if (!payment) throw new NotFoundException('ยังไม่มีการชำระเงินสำหรับการจองนี้');
+    return toCustomerPaymentView(payment);
+  }
+
+  /**
+   * `PATCH /api/staff/payments/:id` with action=approve. Staff confirmed the
+   * slip: mark the payment succeeded, flip the booking to paid/approved, and
+   * queue the confirmation notification — the same side effects the old stub
+   * `pay` endpoint used to do instantly, now gated behind a human check.
+   */
+  async verifyPayment(paymentId: string, adminId: string): Promise<StaffPaymentView> {
+    const payment = await this.payments.getOrFail(paymentId);
+    const booking = await this.repo.findOne({
+      where: { id: payment.bookingId },
+      relations: { customer: true },
+    });
+    if (!booking) throw new NotFoundException('ไม่พบการจอง');
+    if (booking.status === BookingStatus.CANCELLED) {
+      throw new ConflictException('การจองนี้ถูกยกเลิกแล้ว');
+    }
+
+    await this.payments.markVerified(paymentId, adminId);
 
     booking.paymentStatus = PaymentStatus.PAID;
     booking.status = BookingStatus.APPROVED;
     await this.repo.save(booking);
 
-    await this.payments.recordSuccess(booking.id, booking.totalPrice, dto.method ?? PaymentMethod.CARD);
     await this.notifications.sendBookingConfirmation(booking, booking.customer.email);
 
-    return this.getOrFail(id);
+    return toStaffPaymentView(await this.payments.getOrFail(paymentId));
+  }
+
+  /** `PATCH /api/staff/payments/:id` with action=reject. */
+  async rejectPayment(
+    paymentId: string,
+    adminId: string,
+    reason: string,
+  ): Promise<StaffPaymentView> {
+    if (!reason?.trim()) {
+      throw new BadRequestException('กรุณาระบุเหตุผลที่ปฏิเสธสลิป');
+    }
+    await this.payments.markRejected(paymentId, adminId, reason.trim());
+    return toStaffPaymentView(await this.payments.getOrFail(paymentId));
   }
 
   /** `PATCH /api/staff/bookings/:id` — status transition and/or reschedule. */
@@ -187,6 +237,15 @@ export class BookingsService {
       await this.payments.recordRefund(booking.id);
     }
     return this.getOrFail(id);
+  }
+
+  private async loadOwned(id: string, actorId: string, actorRole: UserRole): Promise<Booking> {
+    const booking = await this.repo.findOne({ where: { id } });
+    if (!booking) throw new NotFoundException('ไม่พบการจอง');
+    if (actorRole === UserRole.CUSTOMER && booking.customerId !== actorId) {
+      throw new ForbiddenException('ไม่มีสิทธิ์เข้าถึงการจองนี้');
+    }
+    return booking;
   }
 
   private assertRange(checkIn: string, checkOut: string): void {

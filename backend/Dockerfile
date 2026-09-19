@@ -13,5 +13,7 @@ ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
+COPY assets ./assets
+RUN mkdir -p uploads/slips
 EXPOSE 3000
 CMD ["node", "dist/main.js"]

@@ -4,13 +4,14 @@ import { Booking } from './booking.entity';
 import { BookingsService } from './bookings.service';
 import { BookingsController } from './bookings.controller';
 import { StaffBookingsController } from './staff-bookings.controller';
+import { StaffPaymentActionsController } from './staff-payment-actions.controller';
 import { RoomsModule } from '../rooms/rooms.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Booking]), RoomsModule, PaymentsModule, NotificationsModule],
-  controllers: [BookingsController, StaffBookingsController],
+  controllers: [BookingsController, StaffBookingsController, StaffPaymentActionsController],
   providers: [BookingsService],
   exports: [BookingsService],
 })

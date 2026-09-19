@@ -10,8 +10,12 @@ services:
       DB_HOST: postgres
       DB_PORT: 5432
       REDIS_URL: redis://redis:6379
+      # Slip uploads live on a named volume so they survive redeploys.
+      UPLOAD_DIR: /app/uploads
     ports:
       - "3000:3000"
+    volumes:
+      - uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,3 +56,4 @@ services:
 
 volumes:
   pgdata:
+  uploads:

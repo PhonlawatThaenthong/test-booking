@@ -1,11 +1,14 @@
 import {
-  Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, UseGuards,
+  Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, UploadedFile,
+  UseGuards, UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { BookingsService } from './bookings.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
-import { PayBookingDto } from './dto/pay-booking.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
+import { getPaymentConfig } from '../../config/payment.config';
+import { UploadedSlip } from '../payments/payment.response';
 
 /** Customer-facing bookings. The customer is always taken from the JWT. */
 @Controller('bookings')
@@ -23,15 +26,27 @@ export class BookingsController {
     return this.bookings.findForCustomer(user.sub);
   }
 
-  /** The charge itself is still a stub — see BookingsService.markPaid. */
+  /**
+   * Upload the PromptPay transfer slip (multipart/form-data, field `slip`).
+   * This records the slip and moves the payment to `awaiting_verification`; a
+   * staff member confirms it before the booking is marked paid.
+   */
   @Post(':id/pay')
   @HttpCode(200)
+  @UseInterceptors(FileInterceptor('slip', {
+    limits: { fileSize: getPaymentConfig().maxSlipBytes },
+  }))
   pay(
     @CurrentUser() user: JwtPayload,
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: PayBookingDto,
+    @UploadedFile() slip: UploadedSlip | undefined,
   ) {
-    return this.bookings.markPaid(id, user.sub, user.role, dto);
+    return this.bookings.submitSlip(id, user.sub, user.role, slip);
+  }
+
+  @Get(':id/payment')
+  payment(@CurrentUser() user: JwtPayload, @Param('id', ParseUUIDPipe) id: string) {
+    return this.bookings.getPaymentForCustomer(id, user.sub, user.role);
   }
 
   @Post(':id/cancel')
