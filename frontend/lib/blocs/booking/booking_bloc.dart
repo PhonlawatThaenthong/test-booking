@@ -9,7 +9,7 @@ import 'booking_state.dart';
 class BookingBloc extends Bloc<BookingEvent, BookingState> {
   BookingBloc(this._repository) : super(const BookingState()) {
     on<BookingStarted>(_onStarted);
-    on<BookingCreateAndPayRequested>(_onCreateAndPay);
+    on<BookingCreateRequested>(_onCreate);
     on<BookingApproveRequested>(_onApprove);
     on<BookingCancelRequested>(_onCancel);
     on<BookingRescheduleRequested>(_onReschedule);
@@ -86,12 +86,12 @@ class BookingBloc extends Bloc<BookingEvent, BookingState> {
     }
   }
 
-  Future<void> _onCreateAndPay(
-    BookingCreateAndPayRequested event,
+  Future<void> _onCreate(
+    BookingCreateRequested event,
     Emitter<BookingState> emit,
   ) async {
     try {
-      final booking = await _repository.createAndPay(
+      final booking = await _repository.createBooking(
         roomId: event.roomId,
         roomName: event.roomName,
         customerId: event.customerId,

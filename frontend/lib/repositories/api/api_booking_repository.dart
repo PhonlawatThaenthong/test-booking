@@ -23,18 +23,18 @@ class ApiBookingRepository implements BookingRepository {
         .toList(growable: false);
   }
 
-  /// `POST /api/bookings` then `POST /api/bookings/:id/pay`.
+  /// `POST /api/bookings` — creates a PENDING/UNPAID booking. Payment (QR slip
+  /// upload + staff confirmation) is a separate flow via [PaymentRepository].
   ///
   /// `roomName`, `customerId`, `customerName` and `totalPrice` are deliberately
   /// NOT sent: the API recomputes the price from the stored nightly rate inside
   /// the booking transaction and takes the customer from the JWT. Sending them
   /// would be rejected outright by `forbidNonWhitelisted`.
   ///
-  /// A 409 from the first call (the room was taken in the meantime) propagates
-  /// as a [RepositoryException] with `statusCode: 409` — exactly what
-  /// MockBookingRepository threw, so payment_screen needs no change.
+  /// A 409 (the room was taken in the meantime) propagates as a
+  /// [RepositoryException] with `statusCode: 409`.
   @override
-  Future<Booking> createAndPay({
+  Future<Booking> createBooking({
     required String roomId,
     required String roomName,
     required String customerId,
@@ -50,9 +50,7 @@ class ApiBookingRepository implements BookingRepository {
       'checkOut': ymd(checkOut),
       'guests': guests,
     }) as Map<String, dynamic>;
-
-    final paid = await _api.post('/api/bookings/${created['id']}/pay');
-    return bookingFromJson(paid as Map<String, dynamic>);
+    return bookingFromJson(created);
   }
 
   @override

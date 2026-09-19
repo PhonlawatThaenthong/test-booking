@@ -5,6 +5,7 @@ import '../../models/booking.dart';
 import '../../blocs/auth/auth_bloc.dart';
 import '../../blocs/booking/booking_bloc.dart';
 import '../../utils/formatters.dart';
+import 'payment_screen.dart';
 
 class MyBookingsScreen extends StatelessWidget {
   const MyBookingsScreen({super.key});
@@ -135,6 +136,22 @@ class _BookingTile extends StatelessWidget {
                 ),
               ],
             ),
+            if (booking.paymentStatus == PaymentStatus.unpaid &&
+                booking.status != BookingStatus.cancelled) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => PaymentScreen(existingBooking: booking),
+                    ),
+                  ),
+                  icon: const Icon(Icons.qr_code_2, size: 18),
+                  label: const Text('Pay / upload slip'),
+                ),
+              ),
+            ],
           ],
         ),
       ),

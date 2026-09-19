@@ -39,6 +39,8 @@ dependencies:
 
   # HTTP client for the API repositories (lib/repositories/api/).
   http: ^1.2.2
+  # Media types for multipart slip uploads (transitive dep of http, pinned direct).
+  http_parser: ^4.0.2
 
   # State management
   flutter_bloc: ^9.1.1

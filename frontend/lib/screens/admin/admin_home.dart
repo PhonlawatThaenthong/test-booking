@@ -7,6 +7,7 @@ import '../../blocs/auth/auth_event.dart';
 import 'booking_calendar_screen.dart';
 import 'dashboard_screen.dart';
 import 'manage_bookings_screen.dart';
+import 'manage_payments_screen.dart';
 import 'manage_rooms_screen.dart';
 import 'manage_staff_screen.dart';
 import 'reports_screen.dart';
@@ -33,6 +34,8 @@ class _AdminHomeState extends State<AdminHome> {
       const _NavItem(
           Icons.event_note_outlined, Icons.event_note, 'Bookings'),
       const _NavItem(
+          Icons.receipt_long_outlined, Icons.receipt_long, 'Payments'),
+      const _NavItem(
           Icons.calendar_month_outlined, Icons.calendar_month, 'Calendar'),
       const _NavItem(Icons.king_bed_outlined, Icons.king_bed, 'Rooms'),
       const _NavItem(Icons.bar_chart_outlined, Icons.bar_chart, 'Reports'),
@@ -42,6 +45,7 @@ class _AdminHomeState extends State<AdminHome> {
     final pages = <Widget>[
       const DashboardScreen(),
       const ManageBookingsScreen(),
+      const ManagePaymentsScreen(),
       const BookingCalendarScreen(),
       const ManageRoomsScreen(),
       const ReportsScreen(),

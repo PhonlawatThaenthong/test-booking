@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../config.dart';
@@ -62,6 +64,94 @@ class ApiClient {
 
   Future<dynamic> delete(String path, {bool auth = true}) =>
       _send('DELETE', path, auth: auth);
+
+  /// Base URL, exposed so repositories can build absolute URLs for resources
+  /// loaded outside this client (e.g. a public image in an `Image.network`).
+  String get baseUrl => _baseUrl;
+
+  /// Uploads a single file as `multipart/form-data`. Mirrors [_send]'s auth and
+  /// one-shot 401 refresh, but a multipart request cannot be replayed once its
+  /// stream is read, so each attempt rebuilds the request.
+  Future<dynamic> multipart(
+    String path, {
+    required String field,
+    required List<int> bytes,
+    required String filename,
+    bool auth = true,
+  }) async {
+    Future<http.Response> attempt() async {
+      final request = http.MultipartRequest('POST', Uri.parse('$_baseUrl$path'))
+        ..headers['Accept'] = 'application/json';
+      if (auth && _accessToken != null) {
+        request.headers['Authorization'] = 'Bearer $_accessToken';
+      }
+      request.files.add(http.MultipartFile.fromBytes(
+        field,
+        bytes,
+        filename: filename,
+        contentType: _mediaTypeFor(filename),
+      ));
+      return http.Response.fromStream(await _http.send(request));
+    }
+
+    http.Response response;
+    try {
+      response = await attempt();
+    } on Object catch (e) {
+      throw RepositoryException('ติดต่อเซิร์ฟเวอร์ไม่ได้: $e');
+    }
+
+    if (response.statusCode == 401 && auth && _refreshToken != null) {
+      if (await _refreshTokens()) {
+        try {
+          response = await attempt();
+        } on Object catch (e) {
+          throw RepositoryException('ติดต่อเซิร์ฟเวอร์ไม่ได้: $e');
+        }
+      }
+    }
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      if (response.body.isEmpty) return null;
+      return jsonDecode(utf8.decode(response.bodyBytes));
+    }
+    throw _toException(response);
+  }
+
+  /// GET returning the raw bytes of a resource (e.g. a slip image behind auth),
+  /// with the same one-shot 401 refresh as [_send].
+  Future<Uint8List> getBytes(String path, {bool auth = true}) async {
+    Future<http.Response> attempt() async {
+      final request = http.Request('GET', Uri.parse('$_baseUrl$path'))
+        ..headers['Accept'] = '*/*';
+      if (auth && _accessToken != null) {
+        request.headers['Authorization'] = 'Bearer $_accessToken';
+      }
+      return http.Response.fromStream(await _http.send(request));
+    }
+
+    http.Response response;
+    try {
+      response = await attempt();
+    } on Object catch (e) {
+      throw RepositoryException('ติดต่อเซิร์ฟเวอร์ไม่ได้: $e');
+    }
+
+    if (response.statusCode == 401 && auth && _refreshToken != null) {
+      if (await _refreshTokens()) {
+        try {
+          response = await attempt();
+        } on Object catch (e) {
+          throw RepositoryException('ติดต่อเซิร์ฟเวอร์ไม่ได้: $e');
+        }
+      }
+    }
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return response.bodyBytes;
+    }
+    throw _toException(response);
+  }
 
   Future<dynamic> _send(
     String method,
@@ -213,6 +303,13 @@ AppUser userFromJson(Map<String, dynamic> json) {
     password: '',
     role: roleFromString(json['role'] as String?),
   );
+}
+
+MediaType _mediaTypeFor(String filename) {
+  final lower = filename.toLowerCase();
+  if (lower.endsWith('.png')) return MediaType('image', 'png');
+  if (lower.endsWith('.webp')) return MediaType('image', 'webp');
+  return MediaType('image', 'jpeg');
 }
 
 UserRole roleFromString(String? value) {

@@ -1,33 +1,43 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../models/booking.dart';
+import '../../models/payment.dart';
 import '../../models/room.dart';
 import '../../blocs/auth/auth_bloc.dart';
 import '../../blocs/booking/booking_bloc.dart';
 import '../../blocs/booking/booking_event.dart';
 import '../../blocs/booking/booking_state.dart';
-import '../../services/notification_service.dart';
+import '../../repositories/payment_repository.dart';
+import '../../repositories/repository_exception.dart';
 import '../../utils/formatters.dart';
-import 'booking_confirmation_screen.dart';
 
-/// Simulated secure online payment. In production this screen would hand off to
-/// a PCI-compliant gateway SDK (Stripe / Omise / 2C2P) — the card details never
-/// touch our servers. Here we mock the charge and mark the booking paid.
+/// Manual PromptPay payment: the customer scans the resort's static QR, transfers
+/// the amount in their banking app, then uploads the transfer slip. Staff verify
+/// the slip manually — this screen never marks the booking paid on its own.
+///
+/// Two entry points:
+///  * [PaymentScreen] with room + dates → creates the booking first, then shows
+///    the QR and slip upload.
+///  * [PaymentScreen] with [existingBooking] → for an already-created booking
+///    that is still unpaid (e.g. re-upload after a rejected slip).
 class PaymentScreen extends StatefulWidget {
-  final Room room;
-  final DateTime checkIn;
-  final DateTime checkOut;
-  final int guests;
-  final double total;
+  final Room? room;
+  final DateTime? checkIn;
+  final DateTime? checkOut;
+  final int? guests;
+  final double? total;
+  final Booking? existingBooking;
 
   const PaymentScreen({
     super.key,
-    required this.room,
-    required this.checkIn,
-    required this.checkOut,
-    required this.guests,
-    required this.total,
+    this.room,
+    this.checkIn,
+    this.checkOut,
+    this.guests,
+    this.total,
+    this.existingBooking,
   });
 
   @override
@@ -35,151 +45,386 @@ class PaymentScreen extends StatefulWidget {
 }
 
 class _PaymentScreenState extends State<PaymentScreen> {
-  bool _processing = false;
+  late final PaymentRepository _payments;
 
-  Future<void> _pay() async {
-    setState(() => _processing = true);
+  Booking? _booking;
+  PaymentInfo? _info;
+  PaymentView? _payment;
 
-    final user = context.read<AuthBloc>().state.currentUser!;
+  bool _creating = false;
+  bool _uploading = false;
+  String? _fatalError;
 
-    // Simulate contacting the payment gateway.
-    await Future<void>.delayed(const Duration(milliseconds: 1500));
-    if (!mounted) return;
+  @override
+  void initState() {
+    super.initState();
+    _payments = context.read<PaymentRepository>();
+    _loadInfo();
 
-    // Create + mark paid only after the (simulated) charge succeeds. The
-    // BlocListener below reacts once the booking bloc emits it.
-    context.read<BookingBloc>().add(BookingCreateAndPayRequested(
-          roomId: widget.room.id,
-          roomName: widget.room.name,
-          customerId: user.id,
-          customerName: user.name,
-          checkIn: widget.checkIn,
-          checkOut: widget.checkOut,
-          guests: widget.guests,
-          totalPrice: widget.total,
-        ));
+    if (widget.existingBooking != null) {
+      _booking = widget.existingBooking;
+      _loadPayment();
+    } else {
+      // Reserve the room by creating the (pending) booking; the BlocListener
+      // picks up the result. Guarded so a rebuild never creates twice.
+      _creating = true;
+      final user = context.read<AuthBloc>().state.currentUser!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        context.read<BookingBloc>().add(BookingCreateRequested(
+              roomId: widget.room!.id,
+              roomName: widget.room!.name,
+              customerId: user.id,
+              customerName: user.name,
+              checkIn: widget.checkIn!,
+              checkOut: widget.checkOut!,
+              guests: widget.guests!,
+              totalPrice: widget.total!,
+            ));
+      });
+    }
   }
 
-  Future<void> _onBookingCreated(BuildContext context, Booking booking) async {
-    final user = context.read<AuthBloc>().state.currentUser!;
+  double get _amount =>
+      _booking?.totalPrice ?? widget.total ?? _payment?.amount ?? 0;
 
-    // Fire the automatic email/SMS confirmation.
-    final message = await NotificationService.sendBookingConfirmation(
-      booking: booking,
-      email: user.email,
-      phone: user.phone,
+  Future<void> _loadInfo() async {
+    try {
+      final info = await _payments.fetchInfo();
+      if (mounted) setState(() => _info = info);
+    } on RepositoryException {
+      // QR info is non-critical; the amount + account text still render.
+    }
+  }
+
+  Future<void> _loadPayment() async {
+    final booking = _booking;
+    if (booking == null) return;
+    try {
+      final p = await _payments.fetchForBooking(booking.id);
+      if (mounted) setState(() => _payment = p);
+    } on RepositoryException {
+      // No payment yet, or transient — the QR + upload UI still shows.
+    }
+  }
+
+  void _onBookingCreated(Booking booking) {
+    setState(() {
+      _booking = booking;
+      _creating = false;
+    });
+    _loadPayment();
+  }
+
+  Future<void> _pickAndUpload() async {
+    final booking = _booking;
+    if (booking == null) return;
+
+    final XFile? picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 85,
     );
+    if (picked == null) return;
 
-    if (!context.mounted) return;
-    Navigator.of(context).pushReplacement(MaterialPageRoute(
-      builder: (_) => BookingConfirmationScreen(
-        booking: booking,
-        confirmationMessage: message,
-        sentToEmail: user.email,
-        sentToPhone: user.phone,
-      ),
-    ));
+    setState(() => _uploading = true);
+    try {
+      final bytes = await picked.readAsBytes();
+      final view = await _payments.uploadSlip(
+        bookingId: booking.id,
+        bytes: bytes,
+        filename: picked.name,
+      );
+      if (!mounted) return;
+      setState(() {
+        _payment = view;
+        _uploading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Slip uploaded — awaiting staff confirmation.')),
+      );
+    } on RepositoryException catch (e) {
+      if (!mounted) return;
+      setState(() => _uploading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return BlocListener<BookingBloc, BookingState>(
+      listenWhen: (_, _) => widget.existingBooking == null,
       listener: (context, state) {
-        final booking = state.lastCreatedBooking;
-        if (booking != null) {
-          _onBookingCreated(context, booking);
+        final created = state.lastCreatedBooking;
+        if (created != null && _booking == null) {
+          _onBookingCreated(created);
           return;
         }
-        // The repository rejected the booking (mock overlap check today, HTTP
-        // 409 from the exclusion constraint once the backend is wired up).
         final error = state.errorMessage;
-        if (error != null) {
-          setState(() => _processing = false);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(error),
-              backgroundColor: Theme.of(context).colorScheme.error,
-            ),
-          );
+        if (error != null && _creating) {
+          setState(() {
+            _creating = false;
+            _fatalError = error;
+          });
         }
       },
       child: Scaffold(
-      appBar: AppBar(title: const Text('Secure payment')),
-      body: AbsorbPointer(
-        absorbing: _processing,
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('Amount due',
-                        style: TextStyle(fontSize: 16)),
-                    Text(Format.money(widget.total),
-                        style: const TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF00796B))),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            _qr(),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Icon(Icons.lock, size: 16, color: Colors.grey.shade600),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    'Payments are encrypted and processed by a secure '
-                    'gateway. (Demo — no real charge is made.)',
-                    style: TextStyle(
-                        color: Colors.grey.shade600, fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-      bottomNavigationBar: Padding(
-        padding: const EdgeInsets.all(16),
-        child: FilledButton.icon(
-          onPressed: _processing ? null : _pay,
-          icon: _processing
-              ? const SizedBox(
-                  height: 20,
-                  width: 20,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.white))
-              : const Icon(Icons.lock),
-          label: Text(_processing
-              ? 'Processing…'
-              : 'Pay ${Format.money(widget.total)}'),
-        ),
-      ),
+        appBar: AppBar(title: const Text('Payment')),
+        body: _buildBody(context),
       ),
     );
   }
 
-  Widget _qr() {
+  Widget _buildBody(BuildContext context) {
+    if (_fatalError != null) {
+      return _errorState(_fatalError!);
+    }
+    if (_creating || _booking == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    final status = _payment?.status;
+    return AbsorbPointer(
+      absorbing: _uploading,
+      child: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          _amountCard(),
+          const SizedBox(height: 16),
+          if (status == PaymentState.succeeded)
+            _confirmedCard()
+          else if (status == PaymentState.awaitingVerification)
+            _awaitingCard()
+          else ...[
+            if (status == PaymentState.rejected) _rejectedBanner(),
+            _qrCard(),
+            const SizedBox(height: 16),
+            _uploadButton(),
+            const SizedBox(height: 12),
+            _secureNote(),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _amountCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text('Amount due', style: TextStyle(fontSize: 16)),
+            Text(
+              Format.money(_amount),
+              style: const TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF00796B),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _qrCard() {
+    final url = _info?.qrImageUrl ?? '';
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           children: [
-            const Icon(Icons.qr_code_2, size: 160),
-            const SizedBox(height: 12),
-            Text('Scan with your banking app to pay via PromptPay',
+            SizedBox(
+              height: 220,
+              width: 220,
+              child: url.isEmpty
+                  ? const Icon(Icons.qr_code_2, size: 200)
+                  : Image.network(
+                      url,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, _, _) =>
+                          const Icon(Icons.qr_code_2, size: 200),
+                      loadingBuilder: (_, child, progress) => progress == null
+                          ? child
+                          : const Center(child: CircularProgressIndicator()),
+                    ),
+            ),
+            const SizedBox(height: 16),
+            if (_info != null) ...[
+              Text(
+                _info!.accountName,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const SizedBox(height: 2),
+              Text('PromptPay: ${_info!.promptPayId}',
+                  style: TextStyle(color: Colors.grey.shade700)),
+              const SizedBox(height: 10),
+              Text(
+                _info!.note,
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey.shade700)),
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+              ),
+            ] else
+              Text('Scan with your banking app to pay via PromptPay',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey.shade700)),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _uploadButton() {
+    return FilledButton.icon(
+      onPressed: _uploading ? null : _pickAndUpload,
+      icon: _uploading
+          ? const SizedBox(
+              height: 20,
+              width: 20,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+          : const Icon(Icons.upload_file),
+      style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52)),
+      label: Text(_uploading ? 'Uploading…' : 'Upload payment slip'),
+    );
+  }
+
+  Widget _secureNote() {
+    return Row(
+      children: [
+        Icon(Icons.info_outline, size: 16, color: Colors.grey.shade600),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            'Transfer the amount above, then upload your slip. Staff will '
+            'confirm your payment shortly.',
+            style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _rejectedBanner() {
+    final reason = _payment?.rejectReason;
+    return Card(
+      color: Colors.red.shade50,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.error_outline, color: Colors.red.shade700),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Your previous slip was rejected',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  if (reason != null && reason.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text('Reason: $reason'),
+                  ],
+                  const SizedBox(height: 4),
+                  const Text('Please transfer again and upload a new slip.'),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _awaitingCard() {
+    return Column(
+      children: [
+        Card(
+          color: Colors.orange.shade50,
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              children: [
+                Icon(Icons.hourglass_top, color: Colors.orange.shade700, size: 56),
+                const SizedBox(height: 12),
+                const Text('Slip received',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                const SizedBox(height: 6),
+                Text(
+                  'We are verifying your payment. Your booking will be confirmed '
+                  'once staff approve the slip.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: _uploading ? null : _pickAndUpload,
+          icon: const Icon(Icons.refresh),
+          label: const Text('Re-upload a different slip'),
+        ),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: () => Navigator.of(context).popUntil((r) => r.isFirst),
+          child: const Text('Back to home'),
+        ),
+      ],
+    );
+  }
+
+  Widget _confirmedCard() {
+    return Column(
+      children: [
+        Card(
+          color: Colors.green.shade50,
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              children: [
+                Icon(Icons.check_circle, color: Colors.green.shade600, size: 64),
+                const SizedBox(height: 12),
+                const Text('Payment confirmed',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                const SizedBox(height: 6),
+                Text('Your booking is confirmed. Thank you!',
+                    style: TextStyle(color: Colors.grey.shade700)),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        FilledButton(
+          onPressed: () => Navigator.of(context).popUntil((r) => r.isFirst),
+          child: const Text('Back to home'),
+        ),
+      ],
+    );
+  }
+
+  Widget _errorState(String message) {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.error_outline, size: 56, color: Colors.red.shade400),
+          const SizedBox(height: 12),
+          Text(message, textAlign: TextAlign.center),
+          const SizedBox(height: 20),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Go back'),
+          ),
+        ],
       ),
     );
   }

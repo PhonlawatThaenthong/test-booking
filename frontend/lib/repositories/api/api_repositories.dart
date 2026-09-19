@@ -2,5 +2,6 @@
 library;
 export 'api_auth_repository.dart';
 export 'api_booking_repository.dart';
+export 'api_payment_repository.dart';
 export 'api_client.dart';
 export 'api_room_repository.dart';

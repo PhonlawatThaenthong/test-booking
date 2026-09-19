@@ -6,9 +6,9 @@ class BookingStarted extends BookingEvent {
   const BookingStarted();
 }
 
-/// Creates a booking and marks it paid in one step, run only after the
-/// (simulated) payment charge succeeds.
-class BookingCreateAndPayRequested extends BookingEvent {
+/// Creates a PENDING/UNPAID booking. Payment (QR slip upload + staff
+/// confirmation) happens afterwards through the payment flow.
+class BookingCreateRequested extends BookingEvent {
   final String roomId;
   final String roomName;
   final String customerId;
@@ -18,7 +18,7 @@ class BookingCreateAndPayRequested extends BookingEvent {
   final int guests;
   final double totalPrice;
 
-  const BookingCreateAndPayRequested({
+  const BookingCreateRequested({
     required this.roomId,
     required this.roomName,
     required this.customerId,

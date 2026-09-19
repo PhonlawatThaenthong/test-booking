@@ -14,7 +14,7 @@ class MockBookingRepository implements BookingRepository {
   Future<List<Booking>> fetchBookings() async => List.unmodifiable(_bookings);
 
   @override
-  Future<Booking> createAndPay({
+  Future<Booking> createBooking({
     required String roomId,
     required String roomName,
     required String customerId,
@@ -49,7 +49,7 @@ class MockBookingRepository implements BookingRepository {
       guests: guests,
       totalPrice: totalPrice,
       createdAt: DateTime.now(),
-    )..paymentStatus = PaymentStatus.paid;
+    ); // pending / unpaid — payment is a separate step
     _bookings.add(booking);
     return booking;
   }

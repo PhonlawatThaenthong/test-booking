@@ -46,6 +46,9 @@ class HotelBookingApp extends StatelessWidget {
         RepositoryProvider<BookingRepository>(
           create: (_) => ApiBookingRepository(apiClient),
         ),
+        RepositoryProvider<PaymentRepository>(
+          create: (_) => ApiPaymentRepository(apiClient),
+        ),
         RepositoryProvider<RestaurantRepository>(
           create: (_) => MockRestaurantRepository(),
         ),
